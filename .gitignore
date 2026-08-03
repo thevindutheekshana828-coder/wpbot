@@ -1,3 +1,7 @@
 node_modules/
-auth_info/
+.wwebjs_auth/
+.wwebjs_cache/
+downloaded_file*
 *.mp4
+*.zip
+*.mkv
