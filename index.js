@@ -1,109 +1,101 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers } = require('@whiskeysockets/baileys');
+const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const axios = require('axios');
-const fs = require('fs-extra');
+const fs = require('fs');
 const path = require('path');
-const express = require('express');
 
-// 1. Free Server එක Sleep වීම වැළැක්වීමට කුඩා Web Server එකක් සෑදීම
-const app = express();
-const PORT = process.env.PORT || 3000;
+// පරිගණකයේ නම් වින්ඩෝස් ක්‍රෝම් පාත් එක ද, Railway (Cloud) එකේ නම් ඔටෝ ඩිடெක්ට් වීමට සැකසීම
+const puppeteerConfig = {
+    headless: true,
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+};
 
-app.get('/', (req, res) => {
-    res.send('🤖 WhatsApp Movie Bot is Alive and Running 24/7!');
-});
-
-app.listen(PORT, () => {
-    console.log(`🌐 Web Server running on port ${PORT}`);
-});
-
-// 2. WhatsApp Bot එක ආරම්භ කිරීම
-async function startBot() {
-    const { state, saveCreds } = await useMultiFileAuthState('auth_info');
-
-    const sock = makeWASocket({
-        auth: state,
-        browser: Browsers.ubuntu('Chrome'),
-        syncFullHistory: false
-    });
-
-    sock.ev.on('creds.update', saveCreds);
-
-    sock.ev.on('connection.update', (update) => {
-        const { connection, lastDisconnect, qr } = update;
-
-        if (qr) {
-            console.log('📌 අලුත් QR Code එක Scan කරන්න:');
-            qrcode.generate(qr, { small: true });
-        }
-
-        if (connection === 'close') {
-            const statusCode = lastDisconnect?.error?.output?.statusCode;
-            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-            console.log('සම්බන්ධතාවය බිඳ වැටුණා. නැවත සම්බන්ධ වෙමින්...', shouldReconnect);
-            if (shouldReconnect) {
-                startBot();
-            }
-        } else if (connection === 'open') {
-            console.log('✅ WhatsApp බොට් සාර්ථකව සම්බන්ධ විය!');
-        }
-    });
-
-    sock.ev.on('messages.upsert', async ({ messages }) => {
-        try {
-            const msg = messages[0];
-            if (!msg.message || msg.key.fromMe) return;
-
-            const text = msg.message.conversation || msg.message.extendedTextMessage?.text;
-            const sender = msg.key.remoteJid;
-
-            if (text && (text.startsWith('http://') || text.startsWith('https://'))) {
-                
-                await sock.sendMessage(sender, { text: '🎬 Movie එක Server එකට Download වෙමින් පවතියි, මදක් රැඳී සිටින්න...' });
-
-                const filePath = path.join(__dirname, `temp_${Date.now()}.mp4`);
-
-                const response = await axios({
-                    method: 'GET',
-                    url: text,
-                    responseType: 'stream',
-                    timeout: 0,
-                    maxContentLength: Infinity,
-                    maxBodyLength: Infinity
-                });
-
-                const writer = fs.createWriteStream(filePath);
-                response.data.pipe(writer);
-
-                writer.on('finish', async () => {
-                    try {
-                        await sock.sendMessage(sender, { text: '⬆️ Download වී අවසන්! දැන් WhatsApp එකට Upload වෙනවා...' });
-
-                        await sock.sendMessage(sender, {
-                            document: { url: filePath },
-                            mimetype: 'video/mp4',
-                            fileName: 'Movie.mp4'
-                        });
-
-                        await sock.sendMessage(sender, { text: '✅ සාර්ථකව යවා අවසන් කෙරිණි!' });
-                    } catch (uploadError) {
-                        console.error('Upload Error:', uploadError);
-                        await sock.sendMessage(sender, { text: '❌ WhatsApp එකට Upload කිරීමේදී දෝෂයක් ආවා.' });
-                    } finally {
-                        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-                    }
-                });
-
-                writer.on('error', (err) => {
-                    console.error('Download Error:', err);
-                    sock.sendMessage(sender, { text: '❌ Link එකෙන් Download කිරීමේදී දෝෂයක් සිදු විය.' });
-                    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-                });
-            }
-        } catch (error) {
-            console.error('Message Processing Error:', error);
-        }
-    });
+// ඔබගේ පරිගණකයේ ක්‍රෝම් ඇති තැන (Railway එකේදී මෙය ස්වයංක්‍රීයව ලිනක්ස් ක්‍රෝම් ලබා ගනී)
+if (process.platform === 'win32') {
+    puppeteerConfig.executablePath = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 }
 
-startBot();
+const client = new Client({
+    authStrategy: new LocalAuth(),
+    puppeteer: puppeteerConfig
+});
+
+client.on('qr', (qr) => {
+    console.log('📌 පහත QR කේතය ස්කෑන් කරන්න:');
+    qrcode.generate(qr, { small: true });
+});
+
+client.on('ready', () => {
+    console.log('✅ බොට් සාර්ථකව සූදානම් සහ 24 පැයම ක්‍රියාත්මක වීමට සූදානම්!');
+});
+
+client.on('message', async (msg) => {
+    if (msg.fromMe) return;
+
+    const messageContent = msg.body.trim();
+    const sender = msg.from;
+    console.log("📥 ලැබුණු පණිවිඩය:", messageContent);
+
+    if (messageContent.startsWith('http://') || messageContent.startsWith('https://')) {
+        await msg.reply('⏳ ලින්ක් එක ලැබුණා! ෆයිල් එක ඩවුන්লোড වෙමින් පවතී, කරුණාකර ටිකක් රැඳී සිටින්න...');
+
+        const filePath = path.resolve(__dirname, 'downloaded_file');
+        let finalPath = filePath;
+
+        try {
+            const urlPath = new URL(messageContent).pathname;
+            let fileName = path.basename(urlPath);
+            
+            if (!fileName || !fileName.includes('.')) {
+                fileName = 'file.mp4';
+            }
+
+            finalPath = path.resolve(__dirname, fileName);
+
+            const response = await axios({
+                method: 'GET',
+                url: messageContent,
+                responseType: 'stream',
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                    'Accept': '*/*',
+                    'Accept-Encoding': 'gzip, deflate, br',
+                    'Connection': 'keep-alive'
+                },
+                maxContentLength: Infinity,
+                maxBodyLength: Infinity
+            });
+
+            const writer = fs.createWriteStream(finalPath);
+            response.data.pipe(writer);
+
+            await new Promise((resolve, reject) => {
+                writer.on('finish', resolve);
+                writer.on('error', reject);
+            });
+
+            console.log(`✅ ඩවුන්ලෝඩ් සාර්ථකයි: ${fileName}. දැන් WhatsApp වෙත යවමින් පවතී...`);
+            await msg.reply('📤 ඩවුන්ලෝඩ් කිරීම සාර්ථකයි! දැන් එය WhatsApp වෙත අප්ලෝඩ් වෙමින් පවතී...');
+
+            const media = MessageMedia.fromFilePath(finalPath);
+            await client.sendMessage(sender, media, { caption: `📁 ඔබ ඉල්ලූ ෆයිල් එක මෙන්න: ${fileName}` });
+
+            console.log("✅ ෆයිල් එක සාර්ථකව වට්සප් වෙත යවන ලදී!");
+
+            if (fs.existsSync(finalPath)) {
+                fs.unlinkSync(finalPath);
+            }
+
+        } catch (error) {
+            console.error("❌ දෝෂයක්:", error.message);
+            await msg.reply('❌ මෙම ලින්ක් එකෙන් ෆයිල් එක ඩවුන්লোড කර ගැනීමට නොහැකි විය.');
+            if (fs.existsSync(finalPath)) {
+                fs.unlinkSync(finalPath);
+            }
+        }
+    } else {
+        await msg.reply('👋 කරුණාකර ඩවුන්লোড කිරීමට අවශ්‍ය ඕනෑම **Direct Link** එකක් එවන්න.');
+    }
+});
+
+client.initialize();
